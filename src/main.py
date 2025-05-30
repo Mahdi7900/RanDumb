@@ -25,7 +25,7 @@ def parse_args():
                         default=10000, help='Embedding dimension')
     # Default args
     parser.add_argument('--feature_path', type=str,
-                        default='../feats/', help='Path to features')
+                        default='../', help='Path to features')
     parser.add_argument('--log_dir', type=str,
                         default='../logs/', help='Path to logs')
     args = parser.parse_args()
