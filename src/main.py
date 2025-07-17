@@ -7,6 +7,7 @@ from sklearn.covariance import OAS
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.neighbors import NearestCentroid
 from sklearn.kernel_approximation import RBFSampler
+from LowRankRanDumb import LowRankRanDumb
 
 
 def parse_args():
@@ -14,7 +15,7 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'cifar10', 'cifar100', 'vitbi1k_cars',  'vitbi21k_cars',  'vitbi1k_cifar100', 'vitbi1k_imagenet-r', 'vitbi1k_imagenet-a', 'vitbi1k_cub',
                         'vitbi1k_omnibenchmark', 'vitbi1k_vtab', 'vitbi1k_cars', 'vitbi21k_cifar100', 'vitbi21k_imagenet-r', 'vitbi21k_imagenet-a', 'vitbi21k_cub', 'vitbi21k_omnibenchmark', 'vitbi21k_vtab'], help='Dataset')
     parser.add_argument('--model', type=str, default='SLDA',
-                        choices=['SLDA', 'NCM'], help='Model')
+                        choices=['SLDA', 'NCM', 'LowRankRanDumb'], help='Model')
     parser.add_argument('--augment', action='store_true',
                         help='Use RandomFlip Augmentation')
     parser.add_argument('--embed', action='store_true',
@@ -123,6 +124,20 @@ if __name__ == '__main__':
         preds = model.predict(test_X)
         matrix = confusion_matrix(test_y, preds)
         acc_per_class = matrix.diagonal()/matrix.sum(axis=1)
+        acc = np.mean(acc_per_class)
+    elif args.model == 'LowRankRanDumb':
+        model = LowRankRanDumb(
+            input_dim=train_X.shape[1],
+            embed_dim=args.embed_dim,
+            residual_rank=10,
+            oja_lr=0.1,
+            oja_orthonormalize=True
+        )
+        model.fit_embedder(train_X)
+        model.partial_fit(train_X, train_y)
+        preds = model.predict(test_X)
+        matrix = confusion_matrix(test_y, preds)
+        acc_per_class = matrix.diagonal() / matrix.sum(axis=1)
         acc = np.mean(acc_per_class)
 
     logger_out = f"Test accuracy\t{acc}\tDataset\t{args.dataset}\tModel\t{args.model}\tAugment\t{args.augment}\tEmbed\t{args.embed}"
