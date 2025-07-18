@@ -7,7 +7,10 @@ from sklearn.covariance import OAS
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.neighbors import NearestCentroid
 from sklearn.kernel_approximation import RBFSampler
-from LowRankRanDumb import LowRankRanDumb
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
 
 
 def parse_args():
@@ -15,7 +18,7 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='mnist', choices=['mnist', 'cifar10', 'cifar100', 'vitbi1k_cars',  'vitbi21k_cars',  'vitbi1k_cifar100', 'vitbi1k_imagenet-r', 'vitbi1k_imagenet-a', 'vitbi1k_cub',
                         'vitbi1k_omnibenchmark', 'vitbi1k_vtab', 'vitbi1k_cars', 'vitbi21k_cifar100', 'vitbi21k_imagenet-r', 'vitbi21k_imagenet-a', 'vitbi21k_cub', 'vitbi21k_omnibenchmark', 'vitbi21k_vtab'], help='Dataset')
     parser.add_argument('--model', type=str, default='SLDA',
-                        choices=['SLDA', 'NCM', 'LowRankRanDumb'], help='Model')
+                    choices=['SLDA', 'NCM', 'DLP'], help='Model')
     parser.add_argument('--augment', action='store_true',
                         help='Use RandomFlip Augmentation')
     parser.add_argument('--embed', action='store_true',
@@ -55,6 +58,15 @@ def get_logger(folder, name):
     ch.setFormatter(formatter)
     logger.addHandler(ch)
     return logger
+
+class DiagonalLinearProbe(nn.Module):
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        self.weights = nn.Parameter(torch.ones(num_classes, input_dim))
+        self.bias = nn.Parameter(torch.zeros(num_classes))
+
+    def forward(self, x):
+        return (self.weights * x.unsqueeze(1)).sum(dim=2) + self.bias
 
 
 if __name__ == '__main__':
@@ -125,21 +137,40 @@ if __name__ == '__main__':
         matrix = confusion_matrix(test_y, preds)
         acc_per_class = matrix.diagonal()/matrix.sum(axis=1)
         acc = np.mean(acc_per_class)
-    elif args.model == 'LowRankRanDumb':
-        model = LowRankRanDumb(
-            input_dim=train_X.shape[1],
-            embed_dim=args.embed_dim,
-            residual_rank=10,
-            oja_lr=0.1,
-            oja_orthonormalize=True
-        )
-        model.fit_embedder(train_X)
-        model.partial_fit(train_X, train_y)
-        preds = model.predict(test_X)
-        matrix = confusion_matrix(test_y, preds)
-        acc_per_class = matrix.diagonal() / matrix.sum(axis=1)
-        acc = np.mean(acc_per_class)
+    elif args.model == 'DLP':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = DiagonalLinearProbe(train_X.shape[1], args.num_classes).to(device)
 
+        # Convert data
+        train_X_tensor = torch.tensor(train_X, dtype=torch.float32)
+        train_y_tensor = torch.tensor(train_y, dtype=torch.long)
+        test_X_tensor = torch.tensor(test_X, dtype=torch.float32).to(device)
+        test_y_tensor = torch.tensor(test_y, dtype=torch.long).to(device)
+
+        loader = DataLoader(TensorDataset(train_X_tensor, train_y_tensor), batch_size=32, shuffle=True)
+
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+        # Training loop
+        model.train()
+        for x_batch, y_batch in loader:
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
+
+            optimizer.zero_grad()
+            output = model(x_batch)
+            loss = F.cross_entropy(output, y_batch)
+            loss.backward()
+            optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            preds = model(test_X_tensor).argmax(dim=1).cpu().numpy()
+
+        matrix = confusion_matrix(test_y, preds)
+        acc_per_class = matrix.diagonal()/matrix.sum(axis=1)
+        acc = np.mean(acc_per_class)
+        
     logger_out = f"Test accuracy\t{acc}\tDataset\t{args.dataset}\tModel\t{args.model}\tAugment\t{args.augment}\tEmbed\t{args.embed}"
     if args.embed:
         logger_out += f"\tEmbed_mode\t{args.embed_mode}\tEmbed_dim\t{args.embed_dim}"
